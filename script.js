@@ -413,7 +413,7 @@ async function generateSchedule() {
     showLoading(true);
     
     try {
-        // Generate sample schedule (replace with your actual generation logic)
+        // Generate sample schedule
         setTimeout(() => {
             generateSampleSchedule();
             nextStep(4);
@@ -494,7 +494,7 @@ function showWarningsDialog(warnings) {
     });
 }
 
-// Sample schedule generation (keep your existing one)
+// Sample schedule generation
 function generateSampleSchedule() {
     const timeSlots = generateTimeSlots();
     const schedule = {};
@@ -649,6 +649,361 @@ function formatTimeDisplay(time) {
     return `${displayHour}:${minutes} ${ampm}`;
 }
 
+// Mobile-Compatible Export Functionality
+async function exportSchedule(format) {
+    showLoading(true);
+    
+    try {
+        if (format === 'png') {
+            await exportAsPNG();
+        } else if (format === 'pdf') {
+            await exportAsPDF();
+        }
+    } catch (error) {
+        console.error('Export error:', error);
+        showNotification(`Export failed: ${error.message}`, 'error');
+        
+        // Fallback to basic export
+        try {
+            await fallbackExport(format);
+        } catch (fallbackError) {
+            console.error('Fallback export failed:', fallbackError);
+            showNotification('Export not supported on this device', 'error');
+        }
+    } finally {
+        showLoading(false);
+    }
+}
+
+// Mobile-compatible PNG Export
+async function exportAsPNG() {
+    showNotification('Generating image...', 'info');
+    
+    // Check if we're on mobile
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    
+    if (isMobile) {
+        // Use simple canvas method for mobile
+        await createMobilePNG();
+    } else {
+        // Try advanced method for desktop
+        try {
+            if (typeof html2canvas === 'undefined') {
+                await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
+            }
+            await createAdvancedPNG();
+        } catch (error) {
+            // Fallback to mobile method
+            await createMobilePNG();
+        }
+    }
+}
+
+// Simple mobile PNG creation
+async function createMobilePNG() {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Set canvas size for mobile
+    canvas.width = 800;
+    canvas.height = 1000;
+    
+    // Draw background
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // Draw header
+    ctx.fillStyle = '#000000';
+    ctx.font = 'bold 28px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('SchedualMe Schedule', canvas.width / 2, 50);
+    
+    ctx.font = '18px Arial';
+    ctx.fillText(`Generated: ${new Date().toLocaleDateString()}`, canvas.width / 2, 85);
+    
+    // Draw summary
+    let yPos = 130;
+    if (appState.scheduleStats) {
+        const stats = appState.scheduleStats;
+        ctx.font = 'bold 22px Arial';
+        ctx.textAlign = 'left';
+        ctx.fillText('Summary:', 50, yPos);
+        yPos += 35;
+        
+        ctx.font = '18px Arial';
+        ctx.fillText(`• Total Hours: ${stats.totalScheduledHours}h`, 70, yPos);
+        yPos += 30;
+        ctx.fillText(`• Tasks Scheduled: ${stats.tasksScheduled}`, 70, yPos);
+        yPos += 30;
+        ctx.fillText(`• Efficiency: ${stats.efficiency}%`, 70, yPos);
+        yPos += 50;
+    }
+    
+    // Draw schedule
+    ctx.font = 'bold 22px Arial';
+    ctx.fillText('Weekly Schedule:', 50, yPos);
+    yPos += 40;
+    
+    const dayNames = {
+        monday: 'Monday', tuesday: 'Tuesday', wednesday: 'Wednesday',
+        thursday: 'Thursday', friday: 'Friday', saturday: 'Saturday', sunday: 'Sunday'
+    };
+    
+    appState.days.forEach(day => {
+        ctx.font = 'bold 18px Arial';
+        ctx.fillText(`${dayNames[day]}:`, 70, yPos);
+        yPos += 25;
+        
+        ctx.font = '16px Arial';
+        let tasksAdded = 0;
+        
+        // Show up to 3 tasks per day to fit on screen
+        const timeSlots = generateTimeSlots();
+        for (const slot of timeSlots) {
+            if (tasksAdded >= 3) break;
+            
+            const items = appState.schedule[day]?.[slot] || [];
+            if (items.length > 0) {
+                items.forEach(item => {
+                    if (tasksAdded < 3) {
+                        ctx.fillText(`  ${formatTimeDisplay(slot)} - ${item.name}`, 90, yPos);
+                        yPos += 20;
+                        tasksAdded++;
+                    }
+                });
+            }
+        }
+        
+        if (tasksAdded === 0) {
+            ctx.fillStyle = '#666666';
+            ctx.fillText(`  No tasks scheduled`, 90, yPos);
+            ctx.fillStyle = '#000000';
+            yPos += 20;
+        }
+        
+        yPos += 15; // Spacing between days
+    });
+    
+    // Convert to data URL
+    const dataUrl = canvas.toDataURL('image/png');
+    
+    // Mobile-friendly download
+    if (isIOS() || isAndroid()) {
+        // For mobile, open in new tab or share
+        openImageForMobile(dataUrl, 'schedule.png');
+    } else {
+        // For desktop, download normally
+        downloadImage(dataUrl, `schedule_${getFormattedTimestamp()}.png`);
+    }
+    
+    showNotification('Image ready!', 'success');
+}
+
+// Mobile-compatible PDF Export
+async function exportAsPDF() {
+    showNotification('Creating document...', 'info');
+    
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    
+    if (isMobile) {
+        // Use text-based export for mobile
+        createMobilePDF();
+    } else {
+        // Try advanced PDF for desktop
+        try {
+            if (typeof jsPDF === 'undefined') {
+                await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+            }
+            await createAdvancedPDF();
+        } catch (error) {
+            createMobilePDF();
+        }
+    }
+}
+
+// Simple text-based PDF for mobile
+function createMobilePDF() {
+    let content = `SchedualMe Schedule\n`;
+    content += `===================\n\n`;
+    content += `Generated: ${new Date().toLocaleString()}\n\n`;
+    
+    if (appState.scheduleStats) {
+        content += `SUMMARY:\n`;
+        content += `• Total Hours: ${appState.scheduleStats.totalScheduledHours}h\n`;
+        content += `• Tasks Scheduled: ${appState.scheduleStats.tasksScheduled}\n`;
+        content += `• Efficiency: ${appState.scheduleStats.efficiency}%\n\n`;
+    }
+    
+    content += `SCHEDULE:\n`;
+    content += `=========\n\n`;
+    
+    const dayNames = {
+        monday: 'Monday', tuesday: 'Tuesday', wednesday: 'Wednesday',
+        thursday: 'Thursday', friday: 'Friday', saturday: 'Saturday', sunday: 'Sunday'
+    };
+    
+    const timeSlots = generateTimeSlots();
+    
+    appState.days.forEach(day => {
+        content += `${dayNames[day].toUpperCase()}\n`;
+        content += `${'-'.repeat(dayNames[day].length)}\n`;
+        
+        let hasTasks = false;
+        timeSlots.forEach(slot => {
+            const items = appState.schedule[day]?.[slot] || [];
+            if (items.length > 0) {
+                content += `${formatTimeDisplay(slot).padEnd(8)} : `;
+                items.forEach((item, index) => {
+                    if (index > 0) content += ', ';
+                    content += item.name;
+                });
+                content += '\n';
+                hasTasks = true;
+            }
+        });
+        
+        if (!hasTasks) {
+            content += `No tasks scheduled\n`;
+        }
+        content += '\n';
+    });
+    
+    // Create and download text file
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    
+    if (isIOS() || isAndroid()) {
+        // For mobile, open in new tab
+        window.open(url, '_blank');
+    } else {
+        // For desktop, download
+        const link = document.createElement('a');
+        link.download = `schedule_${getFormattedTimestamp()}.txt`;
+        link.href = url;
+        link.click();
+    }
+    
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showNotification('Document ready!', 'success');
+}
+
+// Utility functions for mobile export
+function isIOS() {
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+}
+
+function isAndroid() {
+    return /Android/.test(navigator.userAgent);
+}
+
+function openImageForMobile(dataUrl, filename) {
+    // Open image in new tab for mobile users to save manually
+    const newWindow = window.open();
+    newWindow.document.write(`
+        <html>
+            <head><title>${filename}</title></head>
+            <body style="margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #f0f0f0;">
+                <img src="${dataUrl}" style="max-width: 100%; height: auto;" alt="Schedule">
+                <p style="position: fixed; bottom: 10px; text-align: center; width: 100%;">Long press to save image</p>
+            </body>
+        </html>
+    `);
+}
+
+function downloadImage(dataUrl, filename) {
+    const link = document.createElement('a');
+    link.download = filename;
+    link.href = dataUrl;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+function getFormattedTimestamp() {
+    return new Date().toISOString().slice(0, 10).replace(/-/g, '');
+}
+
+// Fallback export
+async function fallbackExport(format) {
+    showNotification(`Creating ${format.toUpperCase()}...`, 'info');
+    
+    if (format === 'png') {
+        await createMobilePNG();
+    } else {
+        createMobilePDF();
+    }
+}
+
+// Load external scripts
+function loadScript(src) {
+    return new Promise((resolve, reject) => {
+        if (document.querySelector(`script[src="${src}"]`)) {
+            resolve();
+            return;
+        }
+        
+        const script = document.createElement('script');
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.appendChild(script);
+    });
+}
+
+// Advanced export methods (for desktop)
+async function createAdvancedPNG() {
+    const scheduleElement = document.getElementById('scheduleDisplay');
+    const canvas = await html2canvas(scheduleElement, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff'
+    });
+    
+    const dataUrl = canvas.toDataURL('image/png');
+    downloadImage(dataUrl, `schedule_${getFormattedTimestamp()}.png`);
+    showNotification('PNG exported successfully!', 'success');
+}
+
+async function createAdvancedPDF() {
+    const scheduleElement = document.getElementById('scheduleDisplay');
+    const canvas = await html2canvas(scheduleElement, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff'
+    });
+    
+    const imgData = canvas.toDataURL('image/png');
+    const pdf = new jsPDF.jsPDF({
+        orientation: 'landscape',
+        unit: 'mm',
+        format: 'a4'
+    });
+    
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    
+    const imgWidth = canvas.width;
+    const imgHeight = canvas.height;
+    const ratio = imgHeight / imgWidth;
+    
+    let pdfWidth = pageWidth - 20;
+    let pdfHeight = pdfWidth * ratio;
+    
+    if (pdfHeight > pageHeight - 20) {
+        pdfHeight = pageHeight - 20;
+        pdfWidth = pdfHeight / ratio;
+    }
+    
+    pdf.setFontSize(16);
+    pdf.text('SchedualMe Schedule', 10, 15);
+    pdf.setFontSize(10);
+    pdf.text(`Generated: ${new Date().toLocaleDateString()}`, 10, 22);
+    
+    pdf.addImage(imgData, 'PNG', 10, 30, pdfWidth, pdfHeight);
+    pdf.save(`schedule_${getFormattedTimestamp()}.pdf`);
+    showNotification('PDF exported successfully!', 'success');
+}
+
 // Navigation
 function nextStep(step) {
     if (!validateCurrentStep()) return;
@@ -695,14 +1050,6 @@ function updateProgressIndicator() {
     });
 }
 
-// Export functionality
-function exportSchedule(format) {
-    showNotification(`Exporting as ${format.toUpperCase()}...`, 'info');
-    setTimeout(() => {
-        showNotification(`${format.toUpperCase()} exported successfully!`, 'success');
-    }, 1000);
-}
-
 // UI Utilities
 function showLoading(show) {
     const overlay = document.getElementById('loadingOverlay');
@@ -712,7 +1059,6 @@ function showLoading(show) {
 }
 
 function showNotification(message, type = 'info') {
-    // Simple notification implementation
     const notification = document.createElement('div');
     notification.style.cssText = `
         position: fixed;
@@ -723,13 +1069,15 @@ function showNotification(message, type = 'info') {
         padding: 15px 20px;
         border-radius: 8px;
         z-index: 1001;
+        max-width: 300px;
+        word-wrap: break-word;
     `;
     notification.textContent = message;
     document.body.appendChild(notification);
     
     setTimeout(() => {
         notification.remove();
-    }, 3000);
+    }, 4000);
 }
 
 // Sample data
