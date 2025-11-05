@@ -1021,3 +1021,79 @@ input:checked + .toggle-slider:before {
     animation: smoothAppear 0.5s ease;
 
 }
+/* Conflict Dialog Styles */
+.conflict-dialog {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1002;
+}
+
+.conflict-dialog-content {
+    background: white;
+    border-radius: 12px;
+    padding: 30px;
+    max-width: 500px;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+.conflict-header {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+.conflict-header h3 {
+    color: #e74c3c;
+    margin-bottom: 10px;
+}
+
+.conflicts-list {
+    margin-bottom: 20px;
+}
+
+.conflict-item {
+    padding: 15px;
+    border-radius: 8px;
+    margin-bottom: 10px;
+    border-left: 4px solid;
+}
+
+.conflict-item.critical {
+    background: #ffeaea;
+    border-left-color: #e74c3c;
+}
+
+.conflict-item.warning {
+    background: #fff4e6;
+    border-left-color: #f39c12;
+}
+
+.conflict-title {
+    font-weight: bold;
+    margin-bottom: 5px;
+}
+
+.conflict-message {
+    margin-bottom: 8px;
+    color: #555;
+}
+
+.conflict-details {
+    font-size: 0.9rem;
+    color: #666;
+}
+
+.conflict-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+}
+
