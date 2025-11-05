@@ -6,8 +6,7 @@ const appState = {
     restPeriods: [],
     subjects: [],
     schedule: null,
-    scheduleStats: null,
-    conflicts: []
+    scheduleStats: null
 };
 
 // Initialize the application
@@ -380,317 +379,9 @@ function updateSubjectDays(subjectId, day, checked) {
     }
 }
 
-// Enhanced Conflict Detection
-function detectConflicts() {
-    const conflicts = [];
-    const warnings = [];
-    
-    // 1. Check total time feasibility
-    const totalAvailableMinutes = calculateTotalAvailableTime();
-    const totalRequiredMinutes = appState.subjects.reduce((total, subject) => total + (subject.duration * 60), 0);
-    
-    if (totalRequiredMinutes > totalAvailableMinutes) {
-        conflicts.push({
-            type: 'critical',
-            title: 'Not Enough Time Available',
-            message: `Total required time (${(totalRequiredMinutes/60).toFixed(1)}h) exceeds available time (${(totalAvailableMinutes/60).toFixed(1)}h)`,
-            details: [
-                `You need ${(totalRequiredMinutes/60).toFixed(1)} hours but only have ${(totalAvailableMinutes/60).toFixed(1)} hours available`,
-                'Consider: Reducing task durations, Adding more days, or Removing some tasks'
-            ],
-            tasks: appState.subjects.map(s => s.name)
-        });
-    }
-    
-    // 2. Check individual subject feasibility
-    appState.subjects.forEach(subject => {
-        const subjectAvailableMinutes = calculateSubjectAvailableTime(subject);
-        const subjectRequiredMinutes = subject.duration * 60;
-        
-        if (subjectRequiredMinutes > subjectAvailableMinutes) {
-            conflicts.push({
-                type: 'critical',
-                title: `"${subject.name}" Cannot Be Scheduled`,
-                message: `Task requires ${subject.duration}h but only ${(subjectAvailableMinutes/60).toFixed(1)}h available on selected days`,
-                details: [
-                    `Available days: ${subject.availableDays.map(d => d.charAt(0).toUpperCase() + d.slice(1)).join(', ')}`,
-                    `Required: ${subject.duration} hours`,
-                    `Available: ${(subjectAvailableMinutes/60).toFixed(1)} hours`,
-                    'Consider: Adding more available days or Reducing duration'
-                ],
-                tasks: [subject.name]
-            });
-        }
-    });
-    
-    // 3. Check for overlapping rest periods
-    const restPeriodConflicts = findRestPeriodConflicts();
-    conflicts.push(...restPeriodConflicts);
-    
-    // 4. Check for task-rest period conflicts
-    const taskRestConflicts = findTaskRestConflicts();
-    conflicts.push(...taskRestConflicts);
-    
-    // 5. Check for overlapping unavailable times within same subject
-    const unavailableTimeConflicts = findUnavailableTimeConflicts();
-    conflicts.push(...unavailableTimeConflicts);
-    
-    // 6. Check if tasks can fit in daily work hours
-    const workHourConflicts = findWorkHourConflicts();
-    warnings.push(...workHourConflicts);
-    
-    appState.conflicts = conflicts;
-    appState.warnings = warnings;
-    
-    return {
-        conflicts: conflicts,
-        warnings: warnings,
-        hasCriticalConflicts: conflicts.some(c => c.type === 'critical'),
-        hasWarnings: warnings.length > 0
-    };
-}
-
-function calculateTotalAvailableTime() {
-    let totalMinutes = 0;
-    const timeSlots = generateTimeSlots();
-    
-    appState.days.forEach(day => {
-        const dailyHours = appState.dailyHours[day];
-        if (dailyHours && dailyHours.enabled) {
-            const workSlots = getTimeSlotsBetween(dailyHours.startTime, dailyHours.endTime, timeSlots);
-            totalMinutes += workSlots.length * 30; // 30 minutes per slot
-        } else {
-            // Default: assume 8 hours if no specific hours set
-            totalMinutes += 8 * 60;
-        }
-    });
-    
-    // Subtract rest periods
-    appState.restPeriods.forEach(period => {
-        const periodDays = period.applyToAll ? appState.days : period.days;
-        periodDays.forEach(day => {
-            if (appState.days.includes(day)) {
-                const restSlots = getTimeSlotsBetween(period.startTime, period.endTime, timeSlots);
-                totalMinutes -= restSlots.length * 30;
-            }
-        });
-    });
-    
-    return Math.max(0, totalMinutes);
-}
-
-function calculateSubjectAvailableTime(subject) {
-    let availableMinutes = 0;
-    const timeSlots = generateTimeSlots();
-    
-    subject.availableDays.forEach(day => {
-        if (!appState.days.includes(day)) return;
-        
-        const dailyHours = appState.dailyHours[day];
-        let daySlots = [];
-        
-        if (dailyHours && dailyHours.enabled) {
-            daySlots = getTimeSlotsBetween(dailyHours.startTime, dailyHours.endTime, timeSlots);
-        } else {
-            // Default work day
-            daySlots = getTimeSlotsBetween('09:00', '17:00', timeSlots);
-        }
-        
-        // Subtract rest periods
-        appState.restPeriods.forEach(period => {
-            const periodDays = period.applyToAll ? appState.days : period.days;
-            if (periodDays.includes(day)) {
-                const restSlots = getTimeSlotsBetween(period.startTime, period.endTime, timeSlots);
-                daySlots = daySlots.filter(slot => !restSlots.includes(slot));
-            }
-        });
-        
-        // Subtract subject's unavailable times
-        if (subject.unavailableTimes) {
-            subject.unavailableTimes.forEach(unavailable => {
-                if (unavailable.days.includes(day)) {
-                    const unavailableSlots = getTimeSlotsBetween(unavailable.startTime, unavailable.endTime, timeSlots);
-                    daySlots = daySlots.filter(slot => !unavailableSlots.includes(slot));
-                }
-            });
-        }
-        
-        availableMinutes += daySlots.length * 30;
-    });
-    
-    return availableMinutes;
-}
-
-function findRestPeriodConflicts() {
-    const conflicts = [];
-    
-    for (let i = 0; i < appState.restPeriods.length; i++) {
-        for (let j = i + 1; j < appState.restPeriods.length; j++) {
-            const period1 = appState.restPeriods[i];
-            const period2 = appState.restPeriods[j];
-            
-            const commonDays = period1.applyToAll && period2.applyToAll ? appState.days : 
-                             period1.applyToAll ? period2.days :
-                             period2.applyToAll ? period1.days :
-                             period1.days.filter(day => period2.days.includes(day));
-            
-            if (commonDays.length > 0 && doTimeRangesOverlap(period1.startTime, period1.endTime, period2.startTime, period2.endTime)) {
-                conflicts.push({
-                    type: 'warning',
-                    title: 'Overlapping Rest Periods',
-                    message: `"${period1.name}" and "${period2.name}" overlap`,
-                    details: [
-                        `Period 1: ${period1.startTime} - ${period1.endTime}`,
-                        `Period 2: ${period2.startTime} - ${period2.endTime}`,
-                        `Days: ${commonDays.map(d => d.charAt(0).toUpperCase() + d.slice(1)).join(', ')}`,
-                        'This may reduce available scheduling time'
-                    ],
-                    tasks: [period1.name, period2.name],
-                    times: [`${period1.startTime}-${period1.endTime}`, `${period2.startTime}-${period2.endTime}`]
-                });
-            }
-        }
-    }
-    
-    return conflicts;
-}
-
-function findTaskRestConflicts() {
-    const conflicts = [];
-    const timeSlots = generateTimeSlots();
-    
-    appState.subjects.forEach(subject => {
-        subject.availableDays.forEach(day => {
-            if (!appState.days.includes(day)) return;
-            
-            appState.restPeriods.forEach(period => {
-                const periodDays = period.applyToAll ? appState.days : period.days;
-                if (periodDays.includes(day)) {
-                    const restSlots = getTimeSlotsBetween(period.startTime, period.endTime, timeSlots);
-                    
-                    // Check if subject has unavailable times that conflict with rest periods
-                    if (subject.unavailableTimes) {
-                        subject.unavailableTimes.forEach(unavailable => {
-                            if (unavailable.days.includes(day)) {
-                                const unavailableSlots = getTimeSlotsBetween(unavailable.startTime, unavailable.endTime, timeSlots);
-                                const conflictingSlots = restSlots.filter(slot => unavailableSlots.includes(slot));
-                                
-                                if (conflictingSlots.length > 0) {
-                                    conflicts.push({
-                                        type: 'warning',
-                                        title: 'Task Unavailable During Rest Period',
-                                        message: `"${subject.name}" is marked unavailable during "${period.name}"`,
-                                        details: [
-                                            `Day: ${day.charAt(0).toUpperCase() + day.slice(1)}`,
-                                            `Rest Period: ${period.startTime} - ${period.endTime}`,
-                                            `Unavailable: ${unavailable.startTime} - ${unavailable.endTime}`,
-                                            'This overlap may cause scheduling issues'
-                                        ],
-                                        tasks: [subject.name, period.name],
-                                        times: [`${unavailable.startTime}-${unavailable.endTime}`, `${period.startTime}-${period.endTime}`]
-                                    });
-                                }
-                            }
-                        });
-                    }
-                }
-            });
-        });
-    });
-    
-    return conflicts;
-}
-
-function findUnavailableTimeConflicts() {
-    const conflicts = [];
-    
-    appState.subjects.forEach(subject => {
-        if (!subject.unavailableTimes || subject.unavailableTimes.length < 2) return;
-        
-        for (let i = 0; i < subject.unavailableTimes.length; i++) {
-            for (let j = i + 1; j < subject.unavailableTimes.length; j++) {
-                const time1 = subject.unavailableTimes[i];
-                const time2 = subject.unavailableTimes[j];
-                
-                const commonDays = time1.days.filter(day => time2.days.includes(day));
-                
-                if (commonDays.length > 0 && doTimeRangesOverlap(time1.startTime, time1.endTime, time2.startTime, time2.endTime)) {
-                    conflicts.push({
-                        type: 'warning',
-                        title: 'Overlapping Unavailable Times',
-                        message: `"${subject.name}" has overlapping unavailable periods`,
-                        details: [
-                            `Time 1: ${time1.startTime} - ${time1.endTime}`,
-                            `Time 2: ${time2.startTime} - ${time2.endTime}`,
-                            `Days: ${commonDays.map(d => d.charAt(0).toUpperCase() + d.slice(1)).join(', ')}`,
-                            'This may reduce available scheduling time unnecessarily'
-                        ],
-                        tasks: [subject.name],
-                        times: [`${time1.startTime}-${time1.endTime}`, `${time2.startTime}-${time2.endTime}`]
-                    });
-                }
-            }
-        }
-    });
-    
-    return conflicts;
-}
-
-function findWorkHourConflicts() {
-    const warnings = [];
-    
-    appState.subjects.forEach(subject => {
-        subject.availableDays.forEach(day => {
-            const dailyHours = appState.dailyHours[day];
-            if (dailyHours && dailyHours.enabled) {
-                // Check if subject's unavailable times conflict with work hours
-                if (subject.unavailableTimes) {
-                    subject.unavailableTimes.forEach(unavailable => {
-                        if (unavailable.days.includes(day)) {
-                            if (doTimeRangesOverlap(unavailable.startTime, unavailable.endTime, dailyHours.startTime, dailyHours.endTime)) {
-                                warnings.push({
-                                    type: 'info',
-                                    title: 'Unavailable Time During Work Hours',
-                                    message: `"${subject.name}" is unavailable during work hours on ${day.charAt(0).toUpperCase() + day.slice(1)}`,
-                                    details: [
-                                        `Work Hours: ${dailyHours.startTime} - ${dailyHours.endTime}`,
-                                        `Unavailable: ${unavailable.startTime} - ${unavailable.endTime}`,
-                                        'This reduces available scheduling time'
-                                    ],
-                                    tasks: [subject.name],
-                                    times: [`${unavailable.startTime}-${unavailable.endTime}`]
-                                });
-                            }
-                        }
-                    });
-                }
-            }
-        });
-    });
-    
-    return warnings;
-}
-
-function doTimeRangesOverlap(start1, end1, start2, end2) {
-    return start1 < end2 && start2 < end1;
-}
-
-// Enhanced Schedule Generation with Conflict Detection
+// Schedule Generation
 async function generateSchedule() {
     if (!validateCurrentStep()) return;
-    
-    // First, detect conflicts
-    const conflictCheck = detectConflicts();
-    
-    if (conflictCheck.hasCriticalConflicts) {
-        showConflictsDialog(conflictCheck);
-        return;
-    }
-    
-    if (conflictCheck.hasWarnings || conflictCheck.conflicts.length > 0) {
-        const proceed = await showWarningsDialog(conflictCheck);
-        if (!proceed) return;
-    }
     
     showLoading(true);
     
@@ -743,191 +434,898 @@ async function generateSchedule() {
     }
 }
 
-// Conflict Display Dialogs
-function showConflictsDialog(conflictCheck) {
-    const dialog = document.createElement('div');
-    dialog.className = 'conflict-dialog';
-    dialog.innerHTML = `
-        <div class="conflict-dialog-content">
-            <div class="conflict-header">
-                <h3>🚫 Schedule Conflicts Detected</h3>
-                <p>The following issues prevent schedule generation:</p>
-            </div>
-            <div class="conflicts-list">
-                ${conflictCheck.conflicts.filter(c => c.type === 'critical').map(conflict => `
-                    <div class="conflict-item critical">
-                        <div class="conflict-title">${conflict.title}</div>
-                        <div class="conflict-message">${conflict.message}</div>
-                        <div class="conflict-details">
-                            ${conflict.details.map(detail => `<div class="conflict-detail">• ${detail}</div>`).join('')}
-                        </div>
-                        ${conflict.tasks ? `<div class="conflict-tasks">Affected: ${conflict.tasks.join(', ')}</div>` : ''}
-                    </div>
-                `).join('')}
-            </div>
-            <div class="conflict-actions">
-                <button class="btn-prev" onclick="this.closest('.conflict-dialog').remove()">Go Back & Fix</button>
-            </div>
-        </div>
-    `;
+// Local fallback schedule generation
+function generateSampleSchedule() {
+    const timeSlots = generateTimeSlots();
+    const schedule = {};
     
-    document.body.appendChild(dialog);
+    // Initialize empty schedule
+    appState.days.forEach(day => {
+        schedule[day] = {};
+        timeSlots.forEach(time => {
+            schedule[day][time] = [];
+        });
+    });
+    
+    // Add rest periods first
+    appState.restPeriods.forEach(period => {
+        const periodDays = period.applyToAll ? appState.days : period.days;
+        periodDays.forEach(day => {
+            if (schedule[day]) {
+                const restSlots = getTimeSlotsBetween(period.startTime, period.endTime, timeSlots);
+                restSlots.forEach(slot => {
+                    if (schedule[day][slot]) {
+                        schedule[day][slot].push({
+                            type: 'rest',
+                            name: period.name,
+                            color: '#f39c12'
+                        });
+                    }
+                });
+            }
+        });
+    });
+    
+    // Schedule subjects in a more organized way
+    const timeBlocks = {
+        morning: ['09:00', '09:30', '10:00', '10:30', '11:00', '11:30'],
+        afternoon: ['13:00', '13:30', '14:00', '14:30', '15:00', '15:30', '16:00', '16:30'],
+        evening: ['17:00', '17:30', '18:00', '18:30']
+    };
+    
+    appState.subjects.forEach((subject, index) => {
+        const colors = ['#3498db', '#2ecc71', '#9b59b6', '#e74c3c', '#1abc9c'];
+        const color = colors[index % colors.length];
+        const subjectHours = subject.duration;
+        
+        // Distribute hours across available days
+        const hoursPerDay = Math.ceil(subjectHours / subject.availableDays.length);
+        
+        subject.availableDays.forEach((day, dayIndex) => {
+            if (!schedule[day]) return;
+            
+            // Choose time block based on day index
+            const blockType = dayIndex % 3 === 0 ? 'morning' : 
+                            dayIndex % 3 === 1 ? 'afternoon' : 'evening';
+            const availableSlots = timeBlocks[blockType];
+            
+            if (availableSlots && availableSlots.length > 0) {
+                // Schedule consecutive blocks
+                const slotsToSchedule = Math.min(hoursPerDay * 2, 4); // Max 2 hours per day
+                
+                for (let i = 0; i < slotsToSchedule && i < availableSlots.length; i++) {
+                    const slot = availableSlots[i];
+                    
+                    // Check if slot is available and not in unavailable times
+                    if (isSlotAvailable(schedule[day][slot]) && 
+                        !isTimeUnavailable(day, slot, subject)) {
+                        schedule[day][slot].push({
+                            type: 'task',
+                            name: subject.name,
+                            subjectId: subject.id,
+                            color: color
+                        });
+                    }
+                }
+            }
+        });
+    });
+    
+    // Calculate stats
+    let totalScheduledHours = 0;
+    appState.days.forEach(day => {
+        timeSlots.forEach(slot => {
+            const tasks = schedule[day][slot].filter(item => item.type === 'task');
+            totalScheduledHours += tasks.length * 0.5; // 0.5 hours per slot
+        });
+    });
+    
+    const totalRequiredHours = appState.subjects.reduce((total, subject) => total + subject.duration, 0);
+    const efficiency = totalRequiredHours > 0 ? Math.round((totalScheduledHours / totalRequiredHours) * 100) : 0;
+    
+    appState.schedule = schedule;
+    appState.scheduleStats = {
+        totalScheduledHours: totalScheduledHours.toFixed(1),
+        tasksScheduled: appState.subjects.length,
+        efficiency: efficiency
+    };
 }
 
-async function showWarningsDialog(conflictCheck) {
-    return new Promise((resolve) => {
-        const dialog = document.createElement('div');
-        dialog.className = 'conflict-dialog';
-        dialog.innerHTML = `
-            <div class="conflict-dialog-content">
-                <div class="conflict-header">
-                    <h3>⚠️ Schedule Warnings</h3>
-                    <p>The following issues were detected. You can proceed, but some tasks may not schedule optimally.</p>
-                </div>
-                <div class="conflicts-list">
-                    ${[...conflictCheck.conflicts.filter(c => c.type === 'warning'), ...conflictCheck.warnings].map(conflict => `
-                        <div class="conflict-item warning">
-                            <div class="conflict-title">${conflict.title}</div>
-                            <div class="conflict-message">${conflict.message}</div>
-                            <div class="conflict-details">
-                                ${conflict.details.map(detail => `<div class="conflict-detail">• ${detail}</div>`).join('')}
-                            </div>
-                            ${conflict.tasks ? `<div class="conflict-tasks">Affected: ${conflict.tasks.join(', ')}</div>` : ''}
-                            ${conflict.times ? `<div class="conflict-times">Times: ${conflict.times.join(', ')}</div>` : ''}
-                        </div>
-                    `).join('')}
-                </div>
-                <div class="conflict-actions">
-                    <button class="btn-prev" onclick="closeDialog(false)">Go Back & Fix</button>
-                    <button class="btn-next" onclick="closeDialog(true)">Proceed Anyway</button>
-                </div>
-            </div>
-        `;
-        
-        function closeDialog(proceed) {
-            dialog.remove();
-            resolve(proceed);
-        }
-        
-        window.closeDialog = closeDialog;
-        document.body.appendChild(dialog);
+function isTimeUnavailable(day, time, subject) {
+    if (!subject.unavailableTimes) return false;
+    
+    return subject.unavailableTimes.some(unavailable => {
+        return unavailable.days.includes(day) && 
+               isTimeInRange(time, unavailable.startTime, unavailable.endTime);
     });
 }
 
-// Add CSS for conflict dialogs
-const conflictStyles = `
-.conflict-dialog {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(0, 0, 0, 0.8);
+function isSlotAvailable(slotItems) {
+    return !slotItems.some(item => item.type === 'task' || item.type === 'rest');
+}
+
+function getTimeSlotsBetween(start, end, timeSlots) {
+    return timeSlots.filter(slot => slot >= start && slot < end);
+}
+
+function isTimeInRange(time, start, end) {
+    return time >= start && time < end;
+}
+
+function generateTimeSlots() {
+    const slots = [];
+    for (let hour = 8; hour <= 20; hour++) {
+        for (let minute = 0; minute < 60; minute += 30) {
+            const timeString = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+            slots.push(timeString);
+        }
+    }
+    return slots;
+}
+
+// Schedule Display - Organized Table Layout
+function renderSchedule() {
+    const container = document.getElementById('scheduleDisplay');
+    
+    if (!appState.schedule) {
+        container.innerHTML = '<div class="empty-state"><p>No schedule generated yet.</p></div>';
+        return;
+    }
+    
+    updateScheduleSummary();
+    
+    const timeSlots = generateTimeSlots();
+    const dayNames = {
+        monday: 'Monday', tuesday: 'Tuesday', wednesday: 'Wednesday',
+        thursday: 'Thursday', friday: 'Friday', saturday: 'Saturday', sunday: 'Sunday'
+    };
+    
+    let html = `
+        <div class="schedule-legend">
+            <div class="legend-item">
+                <div class="legend-color" style="background: #3498db;"></div>
+                <span>Work Tasks</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #2ecc71;"></div>
+                <span>Study Tasks</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #9b59b6;"></div>
+                <span>Personal Tasks</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #f39c12;"></div>
+                <span>Rest Periods</span>
+            </div>
+        </div>
+        
+        <table class="schedule-table">
+            <thead>
+                <tr>
+                    <th class="time-column">Time</th>
+                    ${appState.days.map(day => `
+                        <th class="day-column">${dayNames[day]}</th>
+                    `).join('')}
+                </tr>
+            </thead>
+            <tbody>
+    `;
+    
+    // Group time slots into periods for better organization
+    const timePeriods = groupTimeSlotsIntoPeriods(timeSlots);
+    
+    timePeriods.forEach(period => {
+        // Add period header row
+        html += `
+            <tr>
+                <td colspan="${appState.days.length + 1}" class="time-period time-period-${period.period.toLowerCase()}">
+                    ${period.period}
+                </td>
+            </tr>
+        `;
+        
+        // Add time slots for this period
+        period.slots.forEach(slot => {
+            html += `
+                <tr>
+                    <td class="time-column">${formatTimeDisplay(slot)}</td>
+                    ${appState.days.map(day => {
+                        const scheduleItems = appState.schedule[day]?.[slot] || [];
+                        return `
+                            <td class="time-slot">
+                                ${renderScheduleItems(scheduleItems)}
+                            </td>
+                        `;
+                    }).join('')}
+                </tr>
+            `;
+        });
+    });
+    
+    html += `
+            </tbody>
+        </table>
+    `;
+    
+    container.innerHTML = html;
+    
+    animateScheduleAppearance();
+}
+
+function groupTimeSlotsIntoPeriods(timeSlots) {
+    const periods = [
+        { period: 'Morning', slots: [] },
+        { period: 'Afternoon', slots: [] },
+        { period: 'Evening', slots: [] }
+    ];
+    
+    timeSlots.forEach(slot => {
+        const [hours] = slot.split(':').map(Number);
+        
+        if (hours < 12) {
+            periods[0].slots.push(slot);
+        } else if (hours < 17) {
+            periods[1].slots.push(slot);
+        } else {
+            periods[2].slots.push(slot);
+        }
+    });
+    
+    return periods;
+}
+
+function renderScheduleItems(items) {
+    if (items.length === 0) {
+        return '<div class="empty-slot">Available</div>';
+    }
+    
+    return items.map(item => {
+        const className = item.type === 'rest' ? 'schedule-rest' : 'schedule-task';
+        const compactClass = items.length > 2 ? 'compact' : '';
+        
+        return `
+            <div class="${className} ${compactClass}" 
+                 style="background: ${item.color}" 
+                 title="${item.name}">
+                ${item.name}
+            </div>
+        `;
+    }).join('');
+}
+
+function updateScheduleSummary() {
+    if (!appState.scheduleStats) return;
+    
+    const stats = appState.scheduleStats;
+    document.getElementById('totalHours').textContent = `${stats.totalScheduledHours}h`;
+    document.getElementById('tasksScheduled').textContent = stats.tasksScheduled;
+    document.getElementById('efficiencyScore').textContent = `${stats.efficiency}%`;
+}
+
+function animateScheduleAppearance() {
+    setTimeout(() => {
+        const taskBlocks = document.querySelectorAll('.schedule-task');
+        taskBlocks.forEach((block, index) => {
+            block.style.animationDelay = `${index * 0.1}s`;
+        });
+    }, 100);
+}
+
+function formatTimeDisplay(time) {
+    const [hours, minutes] = time.split(':');
+    const hour = parseInt(hours);
+    const ampm = hour >= 12 ? 'PM' : 'AM';
+    const displayHour = hour % 12 || 12;
+    return `${displayHour}:${minutes} ${ampm}`;
+}
+
+// Enhanced Export Functionality
+async function exportSchedule(format) {
+    showLoading(true);
+    
+    try {
+        if (format === 'png') {
+            await exportAsPNG();
+        } else if (format === 'pdf') {
+            await exportAsPDF();
+        }
+    } catch (error) {
+        console.error('Export error:', error);
+        showNotification(`Export failed: ${error.message}`, 'error');
+        
+        // If advanced export fails, use fallback
+        try {
+            await fallbackExport(format);
+        } catch (fallbackError) {
+            console.error('Fallback export also failed:', fallbackError);
+            showNotification('Export failed completely. Please try again.', 'error');
+        }
+    } finally {
+        showLoading(false);
+    }
+}
+
+// PNG Export using html2canvas
+async function exportAsPNG() {
+    // Check if html2canvas is available
+    if (typeof html2canvas === 'undefined') {
+        // Load html2canvas dynamically
+        await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
+    }
+    
+    const scheduleElement = document.getElementById('scheduleDisplay');
+    
+    if (!scheduleElement) {
+        throw new Error('Schedule not found');
+    }
+    
+    showNotification('Generating PNG image...', 'info');
+    
+    // Use html2canvas to capture the schedule
+    const canvas = await html2canvas(scheduleElement, {
+        scale: 2, // Higher quality
+        useCORS: true,
+        allowTaint: true,
+        backgroundColor: '#ffffff',
+        onclone: function(clonedDoc) {
+            // Ensure styles are preserved in the clone
+            const clonedElement = clonedDoc.getElementById('scheduleDisplay');
+            if (clonedElement) {
+                clonedElement.style.width = '100%';
+                clonedElement.style.height = 'auto';
+            }
+        }
+    });
+    
+    // Convert canvas to blob and download
+    canvas.toBlob(function(blob) {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.download = `schedule_${getFormattedTimestamp()}.png`;
+        link.href = url;
+        link.click();
+        
+        // Clean up
+        URL.revokeObjectURL(url);
+        
+        showNotification('PNG exported successfully!', 'success');
+    }, 'image/png');
+}
+
+// PDF Export using jsPDF
+async function exportAsPDF() {
+    // Check if jsPDF is available
+    if (typeof jsPDF === 'undefined') {
+        // Load jsPDF dynamically
+        await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+    }
+    
+    const scheduleElement = document.getElementById('scheduleDisplay');
+    
+    if (!scheduleElement) {
+        throw new Error('Schedule not found');
+    }
+    
+    showNotification('Generating PDF document...', 'info');
+    
+    // Use html2canvas first to capture as image
+    if (typeof html2canvas === 'undefined') {
+        await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
+    }
+    
+    const canvas = await html2canvas(scheduleElement, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff'
+    });
+    
+    const imgData = canvas.toDataURL('image/png');
+    
+    // Create PDF
+    const pdf = new jsPDF.jsPDF({
+        orientation: 'landscape',
+        unit: 'mm',
+        format: 'a4'
+    });
+    
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    
+    // Calculate dimensions to fit the image on the page
+    const imgWidth = canvas.width;
+    const imgHeight = canvas.height;
+    const ratio = imgHeight / imgWidth;
+    
+    let pdfWidth = pageWidth - 20; // Margin
+    let pdfHeight = pdfWidth * ratio;
+    
+    // If too tall for page, scale down
+    if (pdfHeight > pageHeight - 20) {
+        pdfHeight = pageHeight - 20;
+        pdfWidth = pdfHeight / ratio;
+    }
+    
+    // Add title
+    pdf.setFontSize(16);
+    pdf.text('SchedualMe - Generated Schedule', 10, 15);
+    pdf.setFontSize(10);
+    pdf.text(`Generated on: ${new Date().toLocaleDateString()}`, 10, 22);
+    
+    // Add the schedule image
+    pdf.addImage(imgData, 'PNG', 10, 30, pdfWidth, pdfHeight);
+    
+    // Add summary information
+    const summaryY = 30 + pdfHeight + 10;
+    if (summaryY < pageHeight - 20) {
+        pdf.setFontSize(12);
+        pdf.text('Schedule Summary:', 10, summaryY);
+        pdf.setFontSize(10);
+        
+        if (appState.scheduleStats) {
+            const stats = appState.scheduleStats;
+            pdf.text(`Total Scheduled Hours: ${stats.totalScheduledHours}h`, 10, summaryY + 7);
+            pdf.text(`Tasks Scheduled: ${stats.tasksScheduled}`, 10, summaryY + 14);
+            pdf.text(`Efficiency: ${stats.efficiency}%`, 10, summaryY + 21);
+        }
+    }
+    
+    // Save the PDF
+    pdf.save(`schedule_${getFormattedTimestamp()}.pdf`);
+    
+    showNotification('PDF exported successfully!', 'success');
+}
+
+// Fallback export for when libraries fail
+async function fallbackExport(format) {
+    showNotification(`Creating basic ${format.toUpperCase()} file...`, 'info');
+    
+    if (format === 'png') {
+        await createBasicPNG();
+    } else {
+        createBasicTextFile();
+    }
+}
+
+// Basic PNG fallback
+async function createBasicPNG() {
+    // Create a canvas with schedule information
+    const canvas = document.createElement('canvas');
+    canvas.width = 800;
+    canvas.height = 600;
+    const ctx = canvas.getContext('2d');
+    
+    // Draw background
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // Draw header
+    ctx.fillStyle = '#000000';
+    ctx.font = 'bold 24px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('SchedualMe Schedule', canvas.width / 2, 40);
+    
+    ctx.font = '16px Arial';
+    ctx.fillText(`Generated: ${new Date().toLocaleString()}`, canvas.width / 2, 70);
+    
+    // Draw summary
+    if (appState.scheduleStats) {
+        const stats = appState.scheduleStats;
+        ctx.font = 'bold 18px Arial';
+        ctx.textAlign = 'left';
+        ctx.fillText('Summary:', 50, 110);
+        
+        ctx.font = '14px Arial';
+        ctx.fillText(`• Total Hours: ${stats.totalScheduledHours}h`, 70, 135);
+        ctx.fillText(`• Tasks Scheduled: ${stats.tasksScheduled}`, 70, 160);
+        ctx.fillText(`• Efficiency: ${stats.efficiency}%`, 70, 185);
+    }
+    
+    // Draw simple schedule representation
+    ctx.font = 'bold 18px Arial';
+    ctx.fillText('Weekly Schedule:', 50, 230);
+    
+    let yPos = 260;
+    const dayNames = {
+        monday: 'Monday', tuesday: 'Tuesday', wednesday: 'Wednesday',
+        thursday: 'Thursday', friday: 'Friday', saturday: 'Saturday', sunday: 'Sunday'
+    };
+    
+    appState.days.forEach(day => {
+        ctx.font = 'bold 14px Arial';
+        ctx.fillText(`${dayNames[day]}:`, 70, yPos);
+        yPos += 20;
+        
+        ctx.font = '12px Arial';
+        const timeSlots = generateTimeSlots();
+        let tasksShown = 0;
+        
+        timeSlots.forEach(time => {
+            const items = appState.schedule[day]?.[time] || [];
+            if (items.length > 0 && tasksShown < 3) { // Limit tasks per day for space
+                items.forEach(item => {
+                    ctx.fillText(`  ${formatTimeDisplay(time)} - ${item.name}`, 90, yPos);
+                    yPos += 15;
+                    tasksShown++;
+                });
+            }
+        });
+        
+        if (tasksShown === 0) {
+            ctx.fillStyle = '#666666';
+            ctx.fillText(`  No tasks scheduled`, 90, yPos);
+            ctx.fillStyle = '#000000';
+            yPos += 15;
+        }
+        
+        yPos += 10; // Spacing between days
+    });
+    
+    // Convert to data URL and download
+    const dataUrl = canvas.toDataURL('image/png');
+    const link = document.createElement('a');
+    link.download = `schedule_${getFormattedTimestamp()}.png`;
+    link.href = dataUrl;
+    link.click();
+    
+    showNotification('Basic PNG exported successfully!', 'success');
+}
+
+// Basic text file fallback
+function createBasicTextFile() {
+    let content = `SchedualMe Schedule Export\n`;
+    content += `===========================\n\n`;
+    content += `Generated: ${new Date().toLocaleString()}\n\n`;
+    
+    if (appState.scheduleStats) {
+        content += `SUMMARY:\n`;
+        content += `• Total Hours: ${appState.scheduleStats.totalScheduledHours}h\n`;
+        content += `• Tasks Scheduled: ${appState.scheduleStats.tasksScheduled}\n`;
+        content += `• Efficiency: ${appState.scheduleStats.efficiency}%\n\n`;
+    }
+    
+    content += `DETAILED SCHEDULE:\n`;
+    content += `=================\n\n`;
+    
+    const dayNames = {
+        monday: 'Monday', tuesday: 'Tuesday', wednesday: 'Wednesday',
+        thursday: 'Thursday', friday: 'Friday', saturday: 'Saturday', sunday: 'Sunday'
+    };
+    
+    const timeSlots = generateTimeSlots();
+    
+    appState.days.forEach(day => {
+        content += `${dayNames[day].toUpperCase()}\n`;
+        content += `${'='.repeat(dayNames[day].length)}\n`;
+        
+        timeSlots.forEach(time => {
+            const items = appState.schedule[day]?.[time] || [];
+            if (items.length > 0) {
+                content += `${formatTimeDisplay(time).padEnd(8)} : `;
+                items.forEach((item, index) => {
+                    if (index > 0) content += ', ';
+                    content += item.name;
+                });
+                content += '\n';
+            }
+        });
+        
+        content += '\n';
+    });
+    
+    // Create and download text file
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.download = `schedule_${getFormattedTimestamp()}.txt`;
+    link.href = url;
+    link.click();
+    URL.revokeObjectURL(url);
+    
+    showNotification('Text schedule exported!', 'success');
+}
+
+// Utility function to load scripts dynamically
+function loadScript(src) {
+    return new Promise((resolve, reject) => {
+        if (document.querySelector(`script[src="${src}"]`)) {
+            resolve();
+            return;
+        }
+        
+        const script = document.createElement('script');
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.appendChild(script);
+    });
+}
+
+// Get formatted timestamp for filenames
+function getFormattedTimestamp() {
+    const now = new Date();
+    return now.toISOString()
+        .replace(/[:.]/g, '-')
+        .replace('T', '_')
+        .slice(0, -5);
+}
+
+// Navigation
+function nextStep(step) {
+    if (!validateCurrentStep()) return;
+
+    const currentStepEl = document.getElementById(`step${appState.currentStep}`);
+    currentStepEl.classList.add('fade-out');
+    
+    setTimeout(() => {
+        currentStepEl.classList.remove('active', 'fade-out');
+        appState.currentStep = step;
+        
+        const nextStepEl = document.getElementById(`step${step}`);
+        nextStepEl.classList.add('active');
+        
+        updateProgressIndicator();
+        
+        if (step === 4) {
+            renderSchedule();
+        }
+    }, 300);
+}
+
+function prevStep(step) {
+    const currentStepEl = document.getElementById(`step${appState.currentStep}`);
+    currentStepEl.classList.add('fade-out');
+    
+    setTimeout(() => {
+        currentStepEl.classList.remove('active', 'fade-out');
+        appState.currentStep = step;
+        
+        const prevStepEl = document.getElementById(`step${step}`);
+        prevStepEl.classList.add('active');
+        
+        updateProgressIndicator();
+    }, 300);
+}
+
+function validateCurrentStep() {
+    switch (appState.currentStep) {
+        case 1:
+            if (appState.days.length === 0) {
+                showNotification('Please select at least one day', 'error');
+                return false;
+            }
+            break;
+        case 3:
+            if (appState.subjects.length === 0) {
+                showNotification('Please add at least one subject', 'error');
+                return false;
+            }
+            
+            // Validate that subjects have available days
+            for (const subject of appState.subjects) {
+                if (subject.availableDays.length === 0) {
+                    showNotification(`"${subject.name}" has no available days selected`, 'error');
+                    return false;
+                }
+                
+                // Check if weekly duration is reasonable
+                const weeklyMinutes = subject.duration * 60;
+                const availableMinutes = subject.availableDays.length * 8 * 60; // Approximate 8 hours per day
+                if (weeklyMinutes > availableMinutes) {
+                    showNotification(`"${subject.name}" may not fit in available days (${subject.duration}h needed, ${Math.round(availableMinutes/60)}h available)`, 'warning');
+                }
+            }
+            break;
+    }
+    return true;
+}
+
+function updateProgressIndicator() {
+    document.querySelectorAll('.progress-step').forEach(step => {
+        const stepNum = parseInt(step.dataset.step);
+        step.classList.toggle('active', stepNum === appState.currentStep);
+    });
+}
+
+// UI Utilities
+function showLoading(show) {
+    const overlay = document.getElementById('loadingOverlay');
+    if (overlay) {
+        overlay.classList.toggle('active', show);
+    }
+}
+
+function showNotification(message, type = 'info') {
+    // Remove existing notifications
+    const existingNotifications = document.querySelectorAll('.notification');
+    existingNotifications.forEach(notification => notification.remove());
+    
+    const notification = document.createElement('div');
+    notification.className = `notification notification-${type}`;
+    notification.innerHTML = `
+        <div class="notification-content">
+            <span class="notification-message">${message}</span>
+            <button class="notification-close" onclick="this.parentElement.parentElement.remove()">×</button>
+        </div>
+    `;
+    
+    // Style the notification
+    Object.assign(notification.style, {
+        position: 'fixed',
+        top: '20px',
+        right: '20px',
+        background: type === 'error' ? '#e74c3c' : type === 'success' ? '#2ecc71' : type === 'warning' ? '#f39c12' : '#3498db',
+        color: 'white',
+        padding: '15px 20px',
+        borderRadius: '8px',
+        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+        zIndex: '1001',
+        animation: 'slideInRight 0.3s ease',
+        maxWidth: '400px',
+        fontFamily: 'Segoe UI, Tahoma, Geneva, Verdana, sans-serif'
+    });
+    
+    document.body.appendChild(notification);
+    
+    // Auto remove after 5 seconds
+    setTimeout(() => {
+        if (notification.parentElement) {
+            notification.style.animation = 'slideOutRight 0.3s ease forwards';
+            setTimeout(() => notification.remove(), 300);
+        }
+    }, 5000);
+}
+
+// Add notification styles
+const notificationStyles = `
+@keyframes slideInRight {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes slideOutRight {
+    from { transform: translateX(0); opacity: 1; }
+    to { transform: translateX(100%); opacity: 0; }
+}
+
+.notification-content {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 15px;
+}
+
+.notification-close {
+    background: none;
+    border: none;
+    color: white;
+    font-size: 1.2rem;
+    cursor: pointer;
+    padding: 0;
+    width: 20px;
+    height: 20px;
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 1002;
-    animation: fadeIn 0.3s ease;
+    border-radius: 50%;
 }
 
-.conflict-dialog-content {
-    background: white;
-    border-radius: 12px;
-    padding: 30px;
-    max-width: 600px;
-    max-height: 80vh;
-    overflow-y: auto;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+.notification-close:hover {
+    background: rgba(255, 255, 255, 0.2);
 }
 
-.conflict-header {
-    text-align: center;
-    margin-bottom: 25px;
-}
-
-.conflict-header h3 {
-    color: #e74c3c;
-    margin-bottom: 10px;
-    font-size: 1.5rem;
-}
-
-.conflicts-list {
-    margin-bottom: 25px;
-}
-
-.conflict-item {
-    padding: 15px;
-    border-radius: 8px;
-    margin-bottom: 15px;
-    border-left: 4px solid;
-}
-
-.conflict-item.critical {
-    background: #ffeaea;
-    border-left-color: #e74c3c;
-}
-
-.conflict-item.warning {
-    background: #fff4e6;
-    border-left-color: #f39c12;
-}
-
-.conflict-item.info {
-    background: #e8f4fd;
-    border-left-color: #3498db;
-}
-
-.conflict-title {
-    font-weight: bold;
-    margin-bottom: 8px;
-    font-size: 1.1rem;
-}
-
-.conflict-message {
-    margin-bottom: 10px;
-    color: #555;
-}
-
-.conflict-details {
-    margin-bottom: 8px;
-}
-
-.conflict-detail {
-    font-size: 0.9rem;
-    color: #666;
-    margin-bottom: 4px;
-}
-
-.conflict-tasks, .conflict-times {
-    font-size: 0.85rem;
-    color: #777;
-    margin-top: 5px;
-    padding-top: 5px;
-    border-top: 1px solid rgba(0,0,0,0.1);
-}
-
-.conflict-actions {
+.schedule-legend {
     display: flex;
-    gap: 15px;
+    gap: 20px;
+    margin-bottom: 20px;
     justify-content: center;
+    flex-wrap: wrap;
 }
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.9rem;
+}
+
+.legend-color {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+}
+
+.task-block.compact {
+    padding: 4px 6px;
+    font-size: 0.75rem;
+    margin-bottom: 2px;
+}
+
+.time-period-morning { background: #e8f4f8; }
+.time-period-afternoon { background: #f8f4e8; }
+.time-period-evening { background: #f4e8f8; }
 `;
 
-// Inject conflict styles
-if (!document.querySelector('#conflict-styles')) {
+// Inject styles
+if (!document.querySelector('#notification-styles')) {
     const styleSheet = document.createElement('style');
-    styleSheet.id = 'conflict-styles';
-    styleSheet.textContent = conflictStyles;
+    styleSheet.id = 'notification-styles';
+    styleSheet.textContent = notificationStyles;
     document.head.appendChild(styleSheet);
 }
 
-// ... (Keep all the existing functions from the previous script: generateSampleSchedule, renderSchedule, export functions, etc.)
+// Sample data for demonstration
+function loadSampleData() {
+    // Add sample rest period
+    appState.restPeriods.push({
+        id: 1,
+        name: 'Lunch Break',
+        startTime: '12:00',
+        endTime: '13:00',
+        days: [...appState.days],
+        applyToAll: true
+    });
+    
+    // Add sample subjects with weekly durations
+    appState.subjects.push({
+        id: 1,
+        name: 'Work Project',
+        duration: 15,
+        priority: 'high',
+        availableDays: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+        unavailableTimes: [
+            {
+                days: ['monday', 'wednesday', 'friday'],
+                startTime: '14:00',
+                endTime: '15:00'
+            }
+        ]
+    });
+    
+    appState.subjects.push({
+        id: 2,
+        name: 'Study Session',
+        duration: 10,
+        priority: 'medium',
+        availableDays: ['monday', 'tuesday', 'thursday'],
+        unavailableTimes: []
+    });
+    
+    appState.subjects.push({
+        id: 3,
+        name: 'Exercise',
+        duration: 5,
+        priority: 'low',
+        availableDays: ['monday', 'wednesday', 'friday'],
+        unavailableTimes: []
+    });
+    
+    // Enable daily hours for weekdays
+    appState.dailyHours.monday.enabled = true;
+    appState.dailyHours.tuesday.enabled = true;
+    appState.dailyHours.wednesday.enabled = true;
+    appState.dailyHours.thursday.enabled = true;
+    appState.dailyHours.friday.enabled = true;
+    
+    renderDailyHours();
+    renderRestPeriods();
+    renderSubjects();
+}
 
-// Make sure to include all the existing functions from the previous script below this point
-// (generateSampleSchedule, isTimeUnavailable, isSlotAvailable, getTimeSlotsBetween, 
-// isTimeInRange, generateTimeSlots, renderSchedule, groupTimeSlotsIntoPeriods, 
-// renderScheduleItems, updateScheduleSummary, animateScheduleAppearance, formatTimeDisplay,
-// export functions, navigation functions, UI utilities, etc.)
-
-// The rest of your existing functions continue here...
-// [Include all the remaining functions from the previous script]
+// Make functions globally available
+window.nextStep = nextStep;
+window.prevStep = prevStep;
+window.addRestPeriod = addRestPeriod;
+window.removeRestPeriod = removeRestPeriod;
+window.updateRestPeriod = updateRestPeriod;
+window.addSubject = addSubject;
+window.removeSubject = removeSubject;
+window.updateSubject = updateSubject;
+window.updateSubjectDays = updateSubjectDays;
+window.addUnavailableTime = addUnavailableTime;
+window.removeUnavailableTime = removeUnavailableTime;
+window.updateUnavailableTime = updateUnavailableTime;
+window.generateSchedule = generateSchedule;
+window.exportSchedule = exportSchedule;
+window.toggleDailyHours = toggleDailyHours;
+window.updateDailyHours = updateDailyHours;
