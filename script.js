@@ -720,6 +720,336 @@ function formatTimeDisplay(time) {
     return `${displayHour}:${minutes} ${ampm}`;
 }
 
+// Enhanced Export Functionality
+async function exportSchedule(format) {
+    showLoading(true);
+    
+    try {
+        if (format === 'png') {
+            await exportAsPNG();
+        } else if (format === 'pdf') {
+            await exportAsPDF();
+        }
+    } catch (error) {
+        console.error('Export error:', error);
+        showNotification(`Export failed: ${error.message}`, 'error');
+        
+        // If advanced export fails, use fallback
+        try {
+            await fallbackExport(format);
+        } catch (fallbackError) {
+            console.error('Fallback export also failed:', fallbackError);
+            showNotification('Export failed completely. Please try again.', 'error');
+        }
+    } finally {
+        showLoading(false);
+    }
+}
+
+// PNG Export using html2canvas
+async function exportAsPNG() {
+    // Check if html2canvas is available
+    if (typeof html2canvas === 'undefined') {
+        // Load html2canvas dynamically
+        await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
+    }
+    
+    const scheduleElement = document.getElementById('scheduleDisplay');
+    
+    if (!scheduleElement) {
+        throw new Error('Schedule not found');
+    }
+    
+    showNotification('Generating PNG image...', 'info');
+    
+    // Use html2canvas to capture the schedule
+    const canvas = await html2canvas(scheduleElement, {
+        scale: 2, // Higher quality
+        useCORS: true,
+        allowTaint: true,
+        backgroundColor: '#ffffff',
+        onclone: function(clonedDoc) {
+            // Ensure styles are preserved in the clone
+            const clonedElement = clonedDoc.getElementById('scheduleDisplay');
+            if (clonedElement) {
+                clonedElement.style.width = '100%';
+                clonedElement.style.height = 'auto';
+            }
+        }
+    });
+    
+    // Convert canvas to blob and download
+    canvas.toBlob(function(blob) {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.download = `schedule_${getFormattedTimestamp()}.png`;
+        link.href = url;
+        link.click();
+        
+        // Clean up
+        URL.revokeObjectURL(url);
+        
+        showNotification('PNG exported successfully!', 'success');
+    }, 'image/png');
+}
+
+// PDF Export using jsPDF
+async function exportAsPDF() {
+    // Check if jsPDF is available
+    if (typeof jsPDF === 'undefined') {
+        // Load jsPDF dynamically
+        await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+    }
+    
+    const scheduleElement = document.getElementById('scheduleDisplay');
+    
+    if (!scheduleElement) {
+        throw new Error('Schedule not found');
+    }
+    
+    showNotification('Generating PDF document...', 'info');
+    
+    // Use html2canvas first to capture as image
+    if (typeof html2canvas === 'undefined') {
+        await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
+    }
+    
+    const canvas = await html2canvas(scheduleElement, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff'
+    });
+    
+    const imgData = canvas.toDataURL('image/png');
+    
+    // Create PDF
+    const pdf = new jsPDF.jsPDF({
+        orientation: 'landscape',
+        unit: 'mm',
+        format: 'a4'
+    });
+    
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    
+    // Calculate dimensions to fit the image on the page
+    const imgWidth = canvas.width;
+    const imgHeight = canvas.height;
+    const ratio = imgHeight / imgWidth;
+    
+    let pdfWidth = pageWidth - 20; // Margin
+    let pdfHeight = pdfWidth * ratio;
+    
+    // If too tall for page, scale down
+    if (pdfHeight > pageHeight - 20) {
+        pdfHeight = pageHeight - 20;
+        pdfWidth = pdfHeight / ratio;
+    }
+    
+    // Add title
+    pdf.setFontSize(16);
+    pdf.text('SchedualMe - Generated Schedule', 10, 15);
+    pdf.setFontSize(10);
+    pdf.text(`Generated on: ${new Date().toLocaleDateString()}`, 10, 22);
+    
+    // Add the schedule image
+    pdf.addImage(imgData, 'PNG', 10, 30, pdfWidth, pdfHeight);
+    
+    // Add summary information
+    const summaryY = 30 + pdfHeight + 10;
+    if (summaryY < pageHeight - 20) {
+        pdf.setFontSize(12);
+        pdf.text('Schedule Summary:', 10, summaryY);
+        pdf.setFontSize(10);
+        
+        if (appState.scheduleStats) {
+            const stats = appState.scheduleStats;
+            pdf.text(`Total Scheduled Hours: ${stats.totalScheduledHours}h`, 10, summaryY + 7);
+            pdf.text(`Tasks Scheduled: ${stats.tasksScheduled}`, 10, summaryY + 14);
+            pdf.text(`Efficiency: ${stats.efficiency}%`, 10, summaryY + 21);
+        }
+    }
+    
+    // Save the PDF
+    pdf.save(`schedule_${getFormattedTimestamp()}.pdf`);
+    
+    showNotification('PDF exported successfully!', 'success');
+}
+
+// Fallback export for when libraries fail
+async function fallbackExport(format) {
+    showNotification(`Creating basic ${format.toUpperCase()} file...`, 'info');
+    
+    if (format === 'png') {
+        await createBasicPNG();
+    } else {
+        createBasicTextFile();
+    }
+}
+
+// Basic PNG fallback
+async function createBasicPNG() {
+    // Create a canvas with schedule information
+    const canvas = document.createElement('canvas');
+    canvas.width = 800;
+    canvas.height = 600;
+    const ctx = canvas.getContext('2d');
+    
+    // Draw background
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // Draw header
+    ctx.fillStyle = '#000000';
+    ctx.font = 'bold 24px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('SchedualMe Schedule', canvas.width / 2, 40);
+    
+    ctx.font = '16px Arial';
+    ctx.fillText(`Generated: ${new Date().toLocaleString()}`, canvas.width / 2, 70);
+    
+    // Draw summary
+    if (appState.scheduleStats) {
+        const stats = appState.scheduleStats;
+        ctx.font = 'bold 18px Arial';
+        ctx.textAlign = 'left';
+        ctx.fillText('Summary:', 50, 110);
+        
+        ctx.font = '14px Arial';
+        ctx.fillText(`• Total Hours: ${stats.totalScheduledHours}h`, 70, 135);
+        ctx.fillText(`• Tasks Scheduled: ${stats.tasksScheduled}`, 70, 160);
+        ctx.fillText(`• Efficiency: ${stats.efficiency}%`, 70, 185);
+    }
+    
+    // Draw simple schedule representation
+    ctx.font = 'bold 18px Arial';
+    ctx.fillText('Weekly Schedule:', 50, 230);
+    
+    let yPos = 260;
+    const dayNames = {
+        monday: 'Monday', tuesday: 'Tuesday', wednesday: 'Wednesday',
+        thursday: 'Thursday', friday: 'Friday', saturday: 'Saturday', sunday: 'Sunday'
+    };
+    
+    appState.days.forEach(day => {
+        ctx.font = 'bold 14px Arial';
+        ctx.fillText(`${dayNames[day]}:`, 70, yPos);
+        yPos += 20;
+        
+        ctx.font = '12px Arial';
+        const timeSlots = generateTimeSlots();
+        let tasksShown = 0;
+        
+        timeSlots.forEach(time => {
+            const items = appState.schedule[day]?.[time] || [];
+            if (items.length > 0 && tasksShown < 3) { // Limit tasks per day for space
+                items.forEach(item => {
+                    ctx.fillText(`  ${formatTimeDisplay(time)} - ${item.name}`, 90, yPos);
+                    yPos += 15;
+                    tasksShown++;
+                });
+            }
+        });
+        
+        if (tasksShown === 0) {
+            ctx.fillStyle = '#666666';
+            ctx.fillText(`  No tasks scheduled`, 90, yPos);
+            ctx.fillStyle = '#000000';
+            yPos += 15;
+        }
+        
+        yPos += 10; // Spacing between days
+    });
+    
+    // Convert to data URL and download
+    const dataUrl = canvas.toDataURL('image/png');
+    const link = document.createElement('a');
+    link.download = `schedule_${getFormattedTimestamp()}.png`;
+    link.href = dataUrl;
+    link.click();
+    
+    showNotification('Basic PNG exported successfully!', 'success');
+}
+
+// Basic text file fallback
+function createBasicTextFile() {
+    let content = `SchedualMe Schedule Export\n`;
+    content += `===========================\n\n`;
+    content += `Generated: ${new Date().toLocaleString()}\n\n`;
+    
+    if (appState.scheduleStats) {
+        content += `SUMMARY:\n`;
+        content += `• Total Hours: ${appState.scheduleStats.totalScheduledHours}h\n`;
+        content += `• Tasks Scheduled: ${appState.scheduleStats.tasksScheduled}\n`;
+        content += `• Efficiency: ${appState.scheduleStats.efficiency}%\n\n`;
+    }
+    
+    content += `DETAILED SCHEDULE:\n`;
+    content += `=================\n\n`;
+    
+    const dayNames = {
+        monday: 'Monday', tuesday: 'Tuesday', wednesday: 'Wednesday',
+        thursday: 'Thursday', friday: 'Friday', saturday: 'Saturday', sunday: 'Sunday'
+    };
+    
+    const timeSlots = generateTimeSlots();
+    
+    appState.days.forEach(day => {
+        content += `${dayNames[day].toUpperCase()}\n`;
+        content += `${'='.repeat(dayNames[day].length)}\n`;
+        
+        timeSlots.forEach(time => {
+            const items = appState.schedule[day]?.[time] || [];
+            if (items.length > 0) {
+                content += `${formatTimeDisplay(time).padEnd(8)} : `;
+                items.forEach((item, index) => {
+                    if (index > 0) content += ', ';
+                    content += item.name;
+                });
+                content += '\n';
+            }
+        });
+        
+        content += '\n';
+    });
+    
+    // Create and download text file
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.download = `schedule_${getFormattedTimestamp()}.txt`;
+    link.href = url;
+    link.click();
+    URL.revokeObjectURL(url);
+    
+    showNotification('Text schedule exported!', 'success');
+}
+
+// Utility function to load scripts dynamically
+function loadScript(src) {
+    return new Promise((resolve, reject) => {
+        if (document.querySelector(`script[src="${src}"]`)) {
+            resolve();
+            return;
+        }
+        
+        const script = document.createElement('script');
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.appendChild(script);
+    });
+}
+
+// Get formatted timestamp for filenames
+function getFormattedTimestamp() {
+    const now = new Date();
+    return now.toISOString()
+        .replace(/[:.]/g, '-')
+        .replace('T', '_')
+        .slice(0, -5);
+}
+
 // Navigation
 function nextStep(step) {
     if (!validateCurrentStep()) return;
@@ -795,28 +1125,6 @@ function updateProgressIndicator() {
         const stepNum = parseInt(step.dataset.step);
         step.classList.toggle('active', stepNum === appState.currentStep);
     });
-}
-
-// Export functionality
-function exportSchedule(format) {
-    showNotification(`Exporting schedule as ${format.toUpperCase()}...`, 'info');
-    
-    // Simulate export process
-    setTimeout(() => {
-        // In a real implementation, this would make an API call
-        const link = document.createElement('a');
-        link.download = `schedule_${new Date().toISOString().split('T')[0]}.${format}`;
-        
-        // Create a simple data URL for demonstration
-        if (format === 'png') {
-            link.href = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
-        } else {
-            link.href = 'data:application/pdf;base64,JVBERi0xLg10cmFpbGVyPDwvUm9vdDw8L1BhZ2VzPDwvS2lkc1s8PC9NZWRpYUJveFswIDAgMyAzXT4+XT4+Pj4+Pg==';
-        }
-        
-        link.click();
-        showNotification(`Schedule exported as ${format.toUpperCase()}!`, 'success');
-    }, 1500);
 }
 
 // UI Utilities
